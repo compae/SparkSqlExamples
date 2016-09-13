@@ -8,6 +8,8 @@ import org.apache.spark.sql.types.{StructType, _}
 import org.apache.spark.sql.{SQLContext, _}
 import org.apache.spark.{Logging, SparkConf, SparkContext}
 import org.elasticsearch.spark.sql._
+import com.datastax.spark.connector._
+import com.datastax.spark.connector.cql.CassandraConnector
 
 object SparkSqlExamples extends App with Logging {
 
@@ -18,7 +20,7 @@ object SparkSqlExamples extends App with Logging {
   /**
    * Spark Configuration and Create Spark Contexts
    */
-  val sparkConf = new SparkConf().setAppName("sparkSQLExamples").setMaster("local[*]")
+  val sparkConf = new SparkConf().setAppName("sparkSQLExamples").setMaster("local[2]")
     .setIfMissing("hive.execution.engine", "spark")
     .setIfMissing("spark.cassandra.connection.host", "127.0.0.1")
     .setIfMissing("spark.cassandra.connection.port", "9042")
@@ -28,7 +30,7 @@ object SparkSqlExamples extends App with Logging {
   /**
    * You need install mysql and create one user stratio with password stratio, specified in hive-site.xml
    */
-  val hiveContext = new HiveContext(sparkContext)
+  //val hiveContext = new HiveContext(sparkContext)
 
   /**
    * Variables to connect and save into DataSources
@@ -47,30 +49,43 @@ object SparkSqlExamples extends App with Logging {
   val mongoDbCollection = "mongodf"
 
   /**
-   * Create Cassandra keyspace and Table, MongoDB and Elastic can create the tables or indexes
+   * Create Cassandra keyspace
    */
+
   val connector = CassandraConnector(sparkContext.getConf)
   executeCommand(connector,
     s"CREATE KEYSPACE IF NOT EXISTS $cassandraKeyspace WITH REPLICATION = {'class': 'SimpleStrategy', 'replication_factor': 1 }")
-  executeCommand(connector,
-    s"CREATE TABLE IF NOT EXISTS $cassandraKeyspace.$cassandraTable (id varchar PRIMARY KEY)")
+
 
   /**
    * Schema + RDD[Row] -> DataFrame or RDD[Case class] -> DataFrame
    */
-  val schema = new StructType(Array(StructField("id", StringType, false)))
-  val registers = for (a <- 0 to 10000) yield a.toString
-  val rdd = sparkContext.parallelize(registers)
+  case class DataFrameClassExample(id: String, idasint: Int, mapofstringint: Map[String, String])
 
-  //With RDD[Row]
-  val rddOfRow = rdd.map(Row(_))
+  val registers = for (a <- 0 to 10000) yield DataFrameClassExample(a.toString, a, Map("key" -> a.toString))
+  val rddOfCaseClass = sparkContext.parallelize(registers)
+
+  //With Schema + RDD[Row]
+  val rddOfRow = rddOfCaseClass.map(data => Row(data.id, data.idasint, data.mapofstringint))
+  val schema = new StructType(Array(
+    StructField("id", StringType, nullable = false),
+    StructField("idasint", IntegerType, nullable =true),
+    StructField("mapofstringint", MapType(StringType, StringType), nullable = true)
+  ))
   val dataFrame = sqlContext.createDataFrame(rddOfRow, schema)
 
-  //With RDD[Case class]
-  case class DfClass(id: String)
+  /**
+   * We can create the Cassandra Table with spark connector or with the native library
+   */
 
-  val rddOfClass = rdd.map(data => DfClass(data))
-  val dataFrameClass = sqlContext.createDataFrame(rddOfClass)
+  //dataFrame.createCassandraTable(cassandraKeyspace, cassandraTable, Option(Seq("id")), None)
+
+  executeCommand(connector,
+    s"CREATE TABLE IF NOT EXISTS $cassandraKeyspace.$cassandraTable (id varchar PRIMARY KEY, idasint int, " +
+      s"mapofstringint map<text, text>)")
+
+  //With RDD[Case class]
+  val dataFrameClass = sqlContext.createDataFrame(rddOfCaseClass)
 
 
   /**
@@ -93,7 +108,7 @@ object SparkSqlExamples extends App with Logging {
     .save(s"$elasticIndex/$elasticMapping")
 
   //with library method
-  dataFrame.saveToEs(s"$elasticIndex/$elasticMappingLib", elasticOptions)
+  //dataFrame.saveToEs(s"$elasticIndex/$elasticMappingLib", elasticOptions)
 
   /**
    * MongoDB
@@ -128,12 +143,14 @@ object SparkSqlExamples extends App with Logging {
    * READ from all DataSources: ElasticSearch, Cassandra and Mongodb
    */
 
+  /*
   log.info("Printing library tables ....")
 
   sqlContext.read.format(elasticFormat)
     .options(elasticOptions)
     .load(s"$elasticIndex/$elasticMappingLib")
     .show()
+  */
 
   log.info("Printing temporal tables ....")
 
@@ -145,12 +162,12 @@ object SparkSqlExamples extends App with Logging {
   val dataFrameSelectMongo = sqlContext.read.format(mongoDbFormat)
     .options(mongoDbOptions)
     .load()
-    .select("id")
+    .select("*")
 
   val dataFrameSelectCassandra = sqlContext.read.format(cassandraFormat)
     .options(cassandraOptions)
     .load()
-    .select("id")
+    .select("*")
 
   /**
    * Create temporary tables from Dataframes and then using as a table with SQLContext
@@ -176,18 +193,32 @@ object SparkSqlExamples extends App with Logging {
   xDContext.sql("select * from externalcassandra").show()
   */
 
+
+  /**
+   * JOIN with three DataSources
+   */
+  val joinElasticCassandraMongo = sqlContext.sql(
+    s"SELECT * from tempcassandra as tc" +
+      s" JOIN tempelastic as te ON tc.id = te.id" +
+      s" JOIN tempmongo tm on tm.id = tc.id"
+  )
+  joinElasticCassandraMongo.show()
+
+  log.info("Join Count: " + joinElasticCassandraMongo.count())
+
+
   /**
    * Using Hive Context and persist tables from Cassandra, MongoDB and Elastic into HIVE MetaStore
    */
-  hiveContext.sql(
+  /*hiveContext.sql(
     s"""CREATE TABLE IF NOT EXISTS hiveElastic(id STRING)
         |USING $elasticFormat
         |OPTIONS (
         |   path '$elasticIndex/$elasticMapping', readMetadata 'true', nodes '127.0.0.1', port '9200', cluster 'default'
         | )
      """.stripMargin)
-
-  hiveContext.sql(
+*/
+  /*hiveContext.sql(
     s"""CREATE TABLE IF NOT EXISTS hiveCassandra(id STRING)
         |USING $cassandraFormat
         |OPTIONS (
@@ -206,10 +237,10 @@ object SparkSqlExamples extends App with Logging {
   /**
    * Read data with Hive Context from external tables created in the MetaStore
    */
-  val queryElastic = hiveContext.sql(s"SELECT id FROM hiveElastic limit 100")
+  /*val queryElastic = hiveContext.sql(s"SELECT id FROM hiveElastic limit 100")
   queryElastic.show()
   log.info("Elastic Count: " + queryElastic.count())
-
+*/
   val queryMongo = hiveContext.sql(s"SELECT id FROM hiveMongo limit 100")
   queryMongo.show()
   log.info("Mongo Count: " + queryMongo.count())
@@ -219,16 +250,16 @@ object SparkSqlExamples extends App with Logging {
   log.info("Cassandra Count: " + queryCassandra.count())
 
   /**
-   * JOIN with three DataSources
+   * JOIN with three DataSources in Hive Context
    */
   val joinElasticCassandraMongo = hiveContext.sql(
-    s"SELECT tc.id from hiveCassandra as tc" +
-      s" JOIN hiveElastic as te ON tc.id = te.id" +
-      s" JOIN hiveMongo tm on tm.id = te.id"
+    s"SELECT * from hiveCassandra as tc" +
+      //s" JOIN hiveElastic as te ON tc.id = te.id" +
+      s" JOIN hiveMongo tm on tm.id = tc.id"
   )
   joinElasticCassandraMongo.show()
 
   log.info("Join Count: " + joinElasticCassandraMongo.count())
-
+*/
   sys.exit(0)
 }
