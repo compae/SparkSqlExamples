@@ -6,11 +6,11 @@ We will begin with Spark SQL and follow upwith HiveContext. In addition to this,
  
 
 * Scala 2.10.4
-* Spark 1.5.2
-* ElasticSearch 1.7.2
-* Cassandra 2.2.5
-* MongoDB 3.0.7
-* Spark-MongoDb 0.11.1
-* Spark-ElasticSearch 2.2.0
-* Spark-Cassandra 1.5.0
+* Spark 1.6.2
+* ElasticSearch 2.3.4
+* Cassandra 3.2
+* MongoDB 3.2.8
+* Spark-MongoDb 0.11.2
+* Spark-ElasticSearch 2.4.0
+* Spark-Cassandra 1.6.0
  
